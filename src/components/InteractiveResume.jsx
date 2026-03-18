@@ -3,6 +3,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { resumeThemes } from '../constants/resumeThemes';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useKeyboardNav } from '../hooks/useKeyboardNav';
+import { useSEO } from '../hooks/useSEO';
 import SkillsArcOverlay from './SkillsArcOverlay';
 
 const ResumeSceneCanvas = lazy(() => import('./canvas/ResumeSceneCanvas'));
@@ -738,6 +739,17 @@ const InteractiveResume = ({ config }) => {
     ...(resumeThemes[rawTheme?.resumeThemeId ?? 'midnight'] ?? resumeThemes.midnight),
     ...rawTheme,
   };
+
+  // ── SEO ─────────────────────────────────────────────────────────────────────
+  useSEO({
+    name: meta.name,
+    title: meta.title,
+    summary: meta.summary,
+    skills: eras.flatMap((e) => e.skills ?? []),
+    siteUrl: meta.siteUrl ?? '',
+    photoUrl: meta.photoUrl ?? '',
+    location: meta.location ?? '',
+  });
 
   const [activeEraIndex, setActiveEraIndex] = useState(-1);
   const [introPhase, setIntroPhase] = useState('thinking'); // 'thinking' | 'waving' | 'landing'
