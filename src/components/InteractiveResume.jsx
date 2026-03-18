@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { resumeThemes } from '../constants/resumeThemes';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useKeyboardNav } from '../hooks/useKeyboardNav';
 import SkillsArcOverlay from './SkillsArcOverlay';
@@ -727,7 +728,16 @@ const PrintHeader = ({ meta }) => (
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 const InteractiveResume = ({ config }) => {
-  const { meta, theme, eras, worksBaseUrl = '/' } = config;
+  const { meta, theme: rawTheme, eras, worksBaseUrl = '/' } = config;
+
+  // Hydrate the theme: configs may store only { resumeThemeId }, so we look up
+  // the full resumeThemes entry and merge to ensure all properties exist.
+  const theme = {
+    headerBg: 'rgba(0,0,0,0.65)',
+    backdropBlur: '12px',
+    ...(resumeThemes[rawTheme?.resumeThemeId ?? 'midnight'] ?? resumeThemes.midnight),
+    ...rawTheme,
+  };
 
   const [activeEraIndex, setActiveEraIndex] = useState(-1);
   const [introPhase, setIntroPhase] = useState('thinking'); // 'thinking' | 'waving' | 'landing'
