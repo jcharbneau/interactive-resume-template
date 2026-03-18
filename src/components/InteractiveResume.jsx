@@ -749,6 +749,9 @@ const InteractiveResume = ({ config }) => {
     siteUrl: meta.siteUrl ?? '',
     photoUrl: meta.photoUrl ?? '',
     location: meta.location ?? '',
+    github: meta.github ?? '',
+    linkedin: meta.linkedin ?? '',
+    eras,
   });
 
   const [activeEraIndex, setActiveEraIndex] = useState(-1);

@@ -15,7 +15,6 @@ function resumeSeoPlugin() {
           fs.readFileSync('./src/constants/resume-config.json', 'utf-8'),
         );
       } catch {
-        // Config unreadable — leave index.html untouched
         return html;
       }
 
@@ -27,15 +26,28 @@ function resumeSeoPlugin() {
       const description =
         rawSummary.slice(0, 160) + (rawSummary.length > 160 ? '…' : '');
 
-      // Collect unique skills across all eras for <meta keywords>
       const allSkills = [
         ...new Set(eras.flatMap((e) => e.skills ?? []).filter(Boolean)),
       ];
       const keywords = allSkills.slice(0, 20).join(', ');
-
       const pageTitle = jobTitle ? `${name} — ${jobTitle}` : name;
 
-      // Schema.org Person — the real SEO payload
+      // sameAs — identity merging across platforms
+      const sameAs = [meta.linkedin, meta.github, siteUrl || undefined].filter(Boolean);
+
+      // worksFor — employment graph
+      const worksFor = eras
+        .map((e) =>
+          e.company
+            ? {
+                '@type': 'Organization',
+                name: e.companyFull || e.company,
+                ...(e.companyUrl ? { url: e.companyUrl } : {}),
+              }
+            : null,
+        )
+        .filter(Boolean);
+
       const jsonLd = JSON.stringify({
         '@context': 'https://schema.org',
         '@type': 'Person',
@@ -43,23 +55,24 @@ function resumeSeoPlugin() {
         jobTitle,
         description: rawSummary.slice(0, 500),
         ...(siteUrl ? { url: siteUrl } : {}),
-        sameAs: [meta.linkedin, meta.github].filter(Boolean),
-        knowsAbout: allSkills,
         ...(meta.location
-          ? {
-              address: {
-                '@type': 'PostalAddress',
-                addressLocality: meta.location,
-              },
-            }
+          ? { address: { '@type': 'PostalAddress', addressLocality: meta.location } }
           : {}),
+        ...(sameAs.length ? { sameAs } : {}),
+        knowsAbout: allSkills,
+        ...(worksFor.length ? { worksFor } : {}),
       });
 
-      // Only include og:image if it's a real URL (not a base64 data URI)
       const ogImage =
         meta.photoUrl && !meta.photoUrl.startsWith('data:')
           ? `  <meta property="og:image" content="${meta.photoUrl}">`
           : '';
+
+      // <link rel="me"> for IndieWeb / Mastodon / Bluesky identity verification
+      const relMe = [meta.github, meta.linkedin]
+        .filter(Boolean)
+        .map((href) => `  <link rel="me" href="${href}">`)
+        .join('\n');
 
       const injected = `
   <title>${pageTitle}</title>
@@ -67,6 +80,7 @@ function resumeSeoPlugin() {
   ${keywords ? `<meta name="keywords" content="${keywords}">` : ''}
   <meta name="author" content="${name}">
   ${siteUrl ? `<link rel="canonical" href="${siteUrl}">` : ''}
+${relMe}
   <!-- Open Graph (LinkedIn, Slack, iMessage, etc.) -->
   <meta property="og:type" content="profile">
   <meta property="og:title" content="${pageTitle}">
@@ -77,17 +91,83 @@ ${ogImage}
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="${pageTitle}">
   <meta name="twitter:description" content="${description}">
-  <!-- JSON-LD structured data (Google, Bing, DuckDuckGo) -->
+  <!-- JSON-LD structured data (Google, Bing, DuckDuckGo, AI crawlers) -->
   <script type="application/ld+json">${jsonLd}</script>`;
 
-      // Swap out the default <title> placeholder we ship in index.html
       return html.replace('<title>Interactive Resume</title>', injected);
     },
   };
 }
 
+// ─── profile.json plugin ───────────────────────────────────────────────────────
+// Generates /profile.json in the build output — machine-readable identity endpoint
+// for agents, crawlers, and recruiting tools.
+//
+// Shape: { type, version, name, title, location, email, siteUrl, linkedin, github,
+//          summary, skills[], companies[], timeline[], connections[] }
+//
+// Drop public/profile.json into your fork if you want to override with custom data.
+// The build plugin will NOT overwrite a file already present in public/.
+function profileJsonPlugin() {
+  return {
+    name: 'profile-json',
+
+    configureServer(server) {
+      server.middlewares.use('/profile.json', (_req, res) => {
+        let config = { meta: {}, eras: [] };
+        try {
+          config = JSON.parse(fs.readFileSync('./src/constants/resume-config.json', 'utf-8'));
+        } catch { /* serve empty profile if config unreadable */ }
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.end(JSON.stringify(buildProfile(config), null, 2));
+      });
+    },
+
+    generateBundle() {
+      let config = { meta: {}, eras: [] };
+      try {
+        config = JSON.parse(fs.readFileSync('./src/constants/resume-config.json', 'utf-8'));
+      } catch { /* emit empty profile if config unreadable */ }
+
+      this.emitFile({
+        type: 'asset',
+        fileName: 'profile.json',
+        source: JSON.stringify(buildProfile(config), null, 2),
+      });
+    },
+  };
+}
+
+function buildProfile({ meta = {}, eras = [] }) {
+  const allSkills = [...new Set(eras.flatMap((e) => e.skills ?? []).filter(Boolean))];
+  return {
+    type: 'profile',
+    version: '1.0',
+    name: meta.name ?? '',
+    title: meta.title ?? '',
+    location: meta.location ?? '',
+    email: meta.email ?? '',
+    siteUrl: meta.siteUrl ?? '',
+    linkedin: meta.linkedin ?? '',
+    github: meta.github ?? '',
+    summary: meta.summary ?? '',
+    skills: allSkills,
+    companies: eras.map((e) => e.company).filter(Boolean),
+    timeline: eras.map((e) => ({
+      company: e.company ?? '',
+      companyFull: e.companyFull ?? e.company ?? '',
+      role: e.role ?? '',
+      period: e.period ?? '',
+      skills: e.skills ?? [],
+    })),
+    connections: [],
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), resumeSeoPlugin()],
+  plugins: [react(), resumeSeoPlugin(), profileJsonPlugin()],
   build: {
     rollupOptions: {
       output: {
