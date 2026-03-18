@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "name": "Your Name",
+    "title": "Engineering Leader · Platform & Data",
+    "location": "San Francisco, CA",
+    "email": "you@example.com",
+    "linkedin": "https://linkedin.com/in/yourhandle",
+    "github": "https://github.com/yourhandle",
+    "cvUrl": null,
+    "summary": "Replace this with a 2-3 sentence summary of your career. Generated with the interactive resume builder at jessecharbneau.com/builder.",
+    "photoUrl": null
+  },
+  "theme": {
+    "fontFamily": "mono",
+    "bgBase": "#020808",
+    "headerBg": "rgba(0,0,0,0.65)",
+    "vignette": { "centerOpacity": 0, "edgeOpacity": 0.5 },
+    "particleSize": 7.0,
+    "particleAlpha": 0.95,
+    "textPrimary": "rgba(255,255,255,1.0)",
+    "textSecondary": "rgba(255,255,255,0.72)",
+    "backdropBlur": "12px",
+    "resumeThemeId": "midnight"
+  },
+  "eras": [
+    {
+      "id": "era-demo-1",
+      "yearLabel": "2020",
+      "company": "Acme Corp",
+      "companyFull": "Acme Corporation",
+      "companyUrl": "https://example.com",
+      "role": "Senior Engineer",
+      "roleHistory": null,
+      "period": "Jan 2020 – Present",
+      "tenure": "5 years",
+      "tagline": "Built the thing that powers the other things.",
+      "accomplishments": [
+        "Led migration of monolith to microservices, reducing deploy time by 70%.",
+        "Grew data platform from 50 GB to 10 TB while keeping costs flat.",
+        "Mentored a team of 6 engineers across two time zones."
+      ],
+      "skills": ["Python", "Kubernetes", "Snowflake", "Terraform", "TypeScript"],
+      "relatedWorks": null,
+      "companyContext": {
+        "what": "B2B SaaS platform serving enterprise customers in the logistics space.",
+        "size": "200–500 employees",
+        "founded": "2012",
+        "hq": "San Francisco, CA",
+        "notable": "Acquired by BigCo in 2023."
+      },
+      "scene": {
+        "pattern": "neural",
+        "primaryHex": "#4fc3f7",
+        "secondaryHex": "#26c6da",
+        "bgHex": "#020808",
+        "logoUrl": null,
+        "logoDarkBg": true
+      }
+    }
+  ]
+}
