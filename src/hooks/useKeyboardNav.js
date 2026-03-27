@@ -18,7 +18,7 @@ export function useKeyboardNav({ eraCount, activeIndex, onNavigate, onFirstPress
       let next = null;
       if (e.key === 'ArrowDown' || e.key === 'j') {
         e.preventDefault();
-        next = Math.min(activeIndex + 1, eraCount - 1);
+        next = Math.min(activeIndex + 1, eraCount); // eraCount = past all eras (education/footer)
       } else if (e.key === 'ArrowUp' || e.key === 'k') {
         e.preventDefault();
         next = Math.max(activeIndex - 1, -1); // -1 = intro section

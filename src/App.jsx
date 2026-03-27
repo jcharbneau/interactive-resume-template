@@ -1,11 +1,13 @@
 import { Suspense, lazy } from 'react';
-import resumeConfig from './constants/resume-config.json';
+import { resolvedConfig } from './constants/resumeConfig';
+import { resumeThemes } from './constants/resumeThemes';
 
 // Lazy-load the heavy Three.js resume component
-const InteractiveResume = lazy(() => import('./components/InteractiveResume'));
+const InteractiveResume = lazy(() => import('./components/resume/InteractiveResume'));
 
-// Full-screen dark fallback shown while Three.js loads
-const bgColor = resumeConfig?.theme?.bgBase ?? '#020808';
+// Resolve background color from the config's theme
+const themeId = resolvedConfig?.theme?.resumeThemeId ?? 'midnight';
+const bgColor = resumeThemes[themeId]?.bgBase ?? '#020808';
 
 export default function App() {
   return (
@@ -14,7 +16,7 @@ export default function App() {
         <div style={{ width: '100vw', height: '100vh', background: bgColor }} />
       }
     >
-      <InteractiveResume config={resumeConfig} />
+      <InteractiveResume config={resolvedConfig} />
     </Suspense>
   );
 }

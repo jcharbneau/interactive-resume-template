@@ -1,19 +1,22 @@
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Bloom, EffectComposer } from '@react-three/postprocessing';
-import { useEffect, useMemo, useRef } from 'react';
-import * as THREE from 'three';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AdditiveBlending, CanvasTexture, Color, MathUtils, NormalBlending, Vector2 } from 'three';
+import { LOGO_DEV_TOKEN, SHARED_LOGO_MAP, SUPABASE_LOGO_BASE } from '../../../constants/logos';
+import { DEFAULT_PRESET_ID, SCENE_PRESETS } from '../../../constants/scenePresets';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PARTICLE_COUNT = 900;
-const LERP_SPEED = 2.2;
+const PARTICLE_COUNT = 1400;
 
 // ─── Background-aware pixel sampling ─────────────────────────────────────────
 // Dark-bg logos (e.g. Ubisoft white-on-black): sample bright pixels.
 // Light-bg logos (e.g. G-P, Glassdoor on white): sample dark/colorful pixels.
 
-function isInterestingPixel(r, g, b, a, darkBg) {
+function isInterestingPixel(r, g, b, a, darkBg, useAlpha) {
   if (a < 30) return false; // transparent
+  // If the image has meaningful alpha channel, use it to detect the logo shape
+  if (useAlpha) return a > 128;
   const brightness = (r + g + b) / 3;
   if (darkBg) return brightness > 100;
   // Light bg: skip near-white
@@ -25,19 +28,37 @@ function sampleCanvas(canvas, darkBg) {
   const { width: size, height } = canvas;
   const imageData = ctx.getImageData(0, 0, size, height);
   const { data } = imageData;
-  const candidates = [];
 
+  // Check if the image has meaningful alpha (not all 255)
+  let hasTransparentPixels = false;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 250) {
+      hasTransparentPixels = true;
+      break;
+    }
+  }
+
+  const candidates = [];
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < size; x++) {
       const idx = (y * size + x) * 4;
-      if (isInterestingPixel(data[idx], data[idx + 1], data[idx + 2], data[idx + 3], darkBg)) {
+      if (
+        isInterestingPixel(
+          data[idx],
+          data[idx + 1],
+          data[idx + 2],
+          data[idx + 3],
+          darkBg,
+          hasTransparentPixels,
+        )
+      ) {
         candidates.push([x, y]);
       }
     }
   }
   if (candidates.length === 0) return null;
 
-  const worldScale = 5.2;
+  const worldScale = 4.2;
   const positions = new Float32Array(PARTICLE_COUNT * 3);
   for (let i = 0; i < PARTICLE_COUNT; i++) {
     const [px, py] = candidates[Math.floor(Math.random() * candidates.length)];
@@ -52,6 +73,16 @@ function sampleCanvas(canvas, darkBg) {
 // Tries to load a logo PNG from /public/logos/{id}.png.
 // Returns sampled particle positions or null if the file doesn't exist.
 
+/** Ensure Logo.dev URLs include the auth token + size params */
+function ensureLogoDevToken(url) {
+  if (!url || typeof url !== 'string') return url;
+  if (url.includes('img.logo.dev') && !url.includes('token=')) {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}token=${LOGO_DEV_TOKEN}&size=256&format=png`;
+  }
+  return url;
+}
+
 function loadLogoFromUrl(url, darkBg) {
   return new Promise((resolve) => {
     const img = new Image();
@@ -62,9 +93,9 @@ function loadLogoFromUrl(url, darkBg) {
       canvas.width = size;
       canvas.height = size;
       const ctx = canvas.getContext('2d');
-      // Flood with the expected bg so transparent areas become correct
-      ctx.fillStyle = darkBg ? 'black' : 'white';
-      ctx.fillRect(0, 0, size, size);
+      // Do NOT flood background — preserve alpha channel for proper logo sampling.
+      // sampleCanvas will auto-detect if the image has transparency and use
+      // alpha-based sampling instead of brightness-based sampling.
       ctx.drawImage(img, 0, 0, size, size);
       resolve(sampleCanvas(canvas, darkBg));
     };
@@ -77,7 +108,7 @@ function loadLogoFromUrl(url, darkBg) {
 // Drawn as accurate-as-possible brand approximations on a black background.
 // Used when the actual logo image file isn't present.
 
-function drawEraLogo(ctx, size, id) {
+function drawEraLogo(ctx, size, id, companyName) {
   const cx = size / 2;
   const cy = size / 2;
   ctx.lineCap = 'round';
@@ -298,15 +329,100 @@ function drawEraLogo(ctx, size, id) {
       break;
     }
 
+    case 'cornerstone': {
+      // Cornerstone Brands: Bold "CB" monogram with a cornerstone block accent
+      ctx.font = `900 ${Math.round(size * 0.48)}px serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('CB', cx, cy);
+      // Cornerstone block accent (bottom-left)
+      ctx.lineWidth = Math.max(2, size * 0.025);
+      const blockSize = size * 0.12;
+      ctx.strokeRect(size * 0.12, size * 0.75, blockSize, blockSize);
+      ctx.fillRect(size * 0.14, size * 0.77, blockSize * 0.3, blockSize * 0.3);
+      break;
+    }
+
     default: {
-      ctx.lineWidth = Math.max(3, size * 0.04);
-      ctx.beginPath();
-      ctx.moveTo(cx, size * 0.1);
-      ctx.lineTo(size * 0.9, cy);
-      ctx.lineTo(cx, size * 0.9);
-      ctx.lineTo(size * 0.1, cy);
-      ctx.closePath();
-      ctx.stroke();
+      // Fallback: bold filled initials with thin geometric frame.
+      // Letters are filled solid so particles densely populate them.
+      const nameSource = companyName || id;
+      const initials = nameSource
+        .replace(/[^a-zA-Z\s]/g, '')
+        .split(/[\s-]+/)
+        .filter(Boolean)
+        .map((w) => w[0]?.toUpperCase() ?? '')
+        .join('')
+        .slice(0, 3);
+
+      // Hash company name to pick a geometric frame shape
+      let hash = 0;
+      for (let i = 0; i < nameSource.length; i++) {
+        hash = (hash * 31 + nameSource.charCodeAt(i)) | 0;
+      }
+      const shapeType = Math.abs(hash) % 4;
+      const r = size * 0.42;
+
+      // Draw thin geometric frame border
+      ctx.lineWidth = Math.max(2, size * 0.02);
+      switch (shapeType) {
+        case 0: {
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.stroke();
+          break;
+        }
+        case 1: {
+          const half = r * 0.88;
+          const cr = size * 0.08;
+          ctx.beginPath();
+          ctx.moveTo(cx - half + cr, cy - half);
+          ctx.lineTo(cx + half - cr, cy - half);
+          ctx.quadraticCurveTo(cx + half, cy - half, cx + half, cy - half + cr);
+          ctx.lineTo(cx + half, cy + half - cr);
+          ctx.quadraticCurveTo(cx + half, cy + half, cx + half - cr, cy + half);
+          ctx.lineTo(cx - half + cr, cy + half);
+          ctx.quadraticCurveTo(cx - half, cy + half, cx - half, cy + half - cr);
+          ctx.lineTo(cx - half, cy - half + cr);
+          ctx.quadraticCurveTo(cx - half, cy - half, cx - half + cr, cy - half);
+          ctx.closePath();
+          ctx.stroke();
+          break;
+        }
+        case 2: {
+          ctx.beginPath();
+          for (let i = 0; i < 6; i++) {
+            const angle = (Math.PI / 3) * i - Math.PI / 6;
+            const px = cx + r * Math.cos(angle);
+            const py = cy + r * Math.sin(angle);
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+          ctx.stroke();
+          break;
+        }
+        case 3: {
+          ctx.beginPath();
+          ctx.moveTo(cx, cy - r);
+          ctx.lineTo(cx + r, cy);
+          ctx.lineTo(cx, cy + r);
+          ctx.lineTo(cx - r, cy);
+          ctx.closePath();
+          ctx.stroke();
+          break;
+        }
+      }
+
+      // Draw initials — large, bold, solid filled for maximum particle density
+      if (initials) {
+        const fontSize =
+          initials.length === 1 ? size * 0.55 : initials.length === 2 ? size * 0.42 : size * 0.32;
+        ctx.font = `900 ${Math.round(fontSize)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(initials, cx, cy + size * 0.015);
+      }
     }
   }
 }
@@ -332,136 +448,6 @@ function getIntroPositions() {
 
   logoPositionCache.set('intro', positions);
   return positions;
-}
-
-// ─── Intro animation figure drawings ──────────────────────────────────────────
-// Human silhouettes drawn white-on-black, sampled into particle positions.
-// Key: use thick strokes (lineWidth ~w*0.16) so enough pixels are present
-// for the particle sampler to create a recognizable, dense silhouette.
-
-function drawThinkingMan(ctx, w, h) {
-  ctx.fillStyle = 'white';
-  ctx.strokeStyle = 'white';
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  const cx = w * 0.5;
-
-  // Head — large filled circle for density
-  ctx.beginPath();
-  ctx.arc(cx, h * 0.12, w * 0.11, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Torso — thick filled trapezoid (shoulders wider than hips)
-  ctx.beginPath();
-  ctx.moveTo(cx - w * 0.14, h * 0.22); // left shoulder
-  ctx.lineTo(cx + w * 0.14, h * 0.22); // right shoulder
-  ctx.lineTo(cx + w * 0.1, h * 0.55); // right hip
-  ctx.lineTo(cx - w * 0.1, h * 0.55); // left hip
-  ctx.closePath();
-  ctx.fill();
-
-  // Left arm — thick stroke, relaxed at side
-  ctx.lineWidth = w * 0.1;
-  ctx.beginPath();
-  ctx.moveTo(cx - w * 0.12, h * 0.26);
-  ctx.lineTo(cx - w * 0.24, h * 0.46);
-  ctx.stroke();
-
-  // Right upper arm — to elbow
-  ctx.beginPath();
-  ctx.moveTo(cx + w * 0.12, h * 0.26);
-  ctx.lineTo(cx + w * 0.22, h * 0.3);
-  ctx.stroke();
-
-  // Right forearm — elbow bends up to chin (thinking pose)
-  ctx.beginPath();
-  ctx.moveTo(cx + w * 0.22, h * 0.3);
-  ctx.lineTo(cx + w * 0.1, h * 0.2);
-  ctx.stroke();
-
-  // Hand at chin — small filled circle
-  ctx.beginPath();
-  ctx.arc(cx + w * 0.1, h * 0.19, w * 0.05, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Left leg
-  ctx.lineWidth = w * 0.12;
-  ctx.beginPath();
-  ctx.moveTo(cx - w * 0.06, h * 0.55);
-  ctx.lineTo(cx - w * 0.14, h * 0.86);
-  ctx.stroke();
-
-  // Right leg
-  ctx.beginPath();
-  ctx.moveTo(cx + w * 0.06, h * 0.55);
-  ctx.lineTo(cx + w * 0.14, h * 0.86);
-  ctx.stroke();
-}
-
-function drawWavingMan(ctx, w, h) {
-  ctx.fillStyle = 'white';
-  ctx.strokeStyle = 'white';
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  const cx = w * 0.5;
-
-  // Head
-  ctx.beginPath();
-  ctx.arc(cx, h * 0.11, w * 0.11, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Torso — thick trapezoid
-  ctx.beginPath();
-  ctx.moveTo(cx - w * 0.14, h * 0.22);
-  ctx.lineTo(cx + w * 0.14, h * 0.22);
-  ctx.lineTo(cx + w * 0.1, h * 0.55);
-  ctx.lineTo(cx - w * 0.1, h * 0.55);
-  ctx.closePath();
-  ctx.fill();
-
-  // Left arm raised diagonally up-left
-  ctx.lineWidth = w * 0.1;
-  ctx.beginPath();
-  ctx.moveTo(cx - w * 0.12, h * 0.26);
-  ctx.lineTo(cx - w * 0.26, h * 0.12);
-  ctx.stroke();
-
-  // Right arm raised diagonally up-right
-  ctx.beginPath();
-  ctx.moveTo(cx + w * 0.12, h * 0.26);
-  ctx.lineTo(cx + w * 0.26, h * 0.11);
-  ctx.stroke();
-
-  // Wand shaft — extends from right hand tip
-  ctx.lineWidth = w * 0.05;
-  ctx.beginPath();
-  ctx.moveTo(cx + w * 0.26, h * 0.11);
-  ctx.lineTo(cx + w * 0.36, h * 0.01);
-  ctx.stroke();
-
-  // Wand tip — filled star burst (5 short lines radiating from tip)
-  const tx = cx + w * 0.36;
-  const ty = h * 0.01;
-  ctx.lineWidth = w * 0.04;
-  for (let a = 0; a < Math.PI * 2; a += Math.PI / 3) {
-    ctx.beginPath();
-    ctx.moveTo(tx, ty);
-    ctx.lineTo(tx + Math.cos(a) * w * 0.07, ty + Math.sin(a) * w * 0.07);
-    ctx.stroke();
-  }
-
-  // Left leg
-  ctx.lineWidth = w * 0.12;
-  ctx.beginPath();
-  ctx.moveTo(cx - w * 0.06, h * 0.55);
-  ctx.lineTo(cx - w * 0.14, h * 0.86);
-  ctx.stroke();
-
-  // Right leg
-  ctx.beginPath();
-  ctx.moveTo(cx + w * 0.06, h * 0.55);
-  ctx.lineTo(cx + w * 0.14, h * 0.86);
-  ctx.stroke();
 }
 
 // ─── Cengage: graduation cap (mortarboard) ────────────────────────────────────
@@ -578,25 +564,55 @@ function getShapePositions(key, drawFn) {
   return positions;
 }
 
-function getCanvasLogoPositions(id) {
+// Map company names to canvas logo IDs for drawEraLogo fallbacks
+const COMPANY_TO_LOGO_ID = {
+  'g-p': 'gp',
+  'globalization partners': 'gp',
+  'rigetti computing': 'rigetti',
+  rigetti: 'rigetti',
+  glassdoor: 'glassdoor',
+  ubisoft: 'ubisoft',
+  'ubisoft entertainment': 'ubisoft',
+  cengage: 'cengage',
+  'cengage learning': 'cengage',
+  'cornerstone brands': 'cornerstone',
+  cornerstonebrands: 'cornerstone',
+  'cornerstone brands, a division of hsn': 'cornerstone',
+};
+
+function getCanvasLogoPositions(id, companyName) {
   if (id === 'intro') return getIntroPositions();
-  if (id === 'intro-thinking') return getShapePositions('intro-thinking', drawThinkingMan);
-  if (id === 'intro-waving') return getShapePositions('intro-waving', drawWavingMan);
   if (id === 'cengage') return getShapePositions('cengage', drawGraduationCap);
   if (id === 'early') return getShapePositions('early', drawShoppingCart);
-  if (logoPositionCache.has(id)) return logoPositionCache.get(id);
 
-  const size = 192;
+  // Try mapping company name to a known canvas logo
+  const logoId = companyName ? (COMPANY_TO_LOGO_ID[companyName.toLowerCase().trim()] ?? id) : id;
+
+  if (logoPositionCache.has(logoId)) return logoPositionCache.get(logoId);
+
+  // Use higher resolution for monogram fallbacks (default case) —
+  // more pixels = denser particle sampling = more legible initials
+  const knownLogos = new Set([
+    'gp',
+    'rigetti',
+    'careerbreak',
+    'glassdoor',
+    'ubisoft',
+    'cengage',
+    'early',
+    'cornerstone',
+  ]);
+  const size = knownLogos.has(logoId) ? 192 : 384;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = 'black';
   ctx.fillRect(0, 0, size, size);
-  drawEraLogo(ctx, size, id);
+  drawEraLogo(ctx, size, logoId, companyName);
 
   const positions = sampleCanvas(canvas, true); // our canvas drawings are white-on-black
-  logoPositionCache.set(id, positions);
+  logoPositionCache.set(logoId, positions);
   return positions;
 }
 
@@ -641,6 +657,8 @@ const vertexShader = /* glsl */ `
   uniform float uTime;
   uniform vec2  uMouse;
   uniform float uMouseActive;
+  uniform float uMouseRadius;
+  uniform float uMouseStrength;
 
   attribute float aRandom;
   attribute float aPhase;
@@ -656,15 +674,15 @@ const vertexShader = /* glsl */ `
     modelPosition.y += sin(uTime * 0.55 + aPhase) * 0.04;
     modelPosition.x += cos(uTime * 0.35 + aPhase * 1.3) * 0.025;
 
-    // Mouse force field
+    // Mouse force field — radius and strength driven by scene preset
     if (uMouseActive > 0.001) {
       vec2 worldMouse = uMouse * 4.8;
       vec2 toParticle = modelPosition.xy - worldMouse;
       float dist = length(toParticle);
-      if (dist < 2.5 && dist > 0.001) {
-        float norm     = 1.0 - dist / 2.5;
-        float strength = norm * uMouseActive * 0.45;
-        float force    = dist < 0.8 ? strength : -strength * 0.35;
+      if (dist < uMouseRadius && dist > 0.001) {
+        float norm     = 1.0 - dist / uMouseRadius;
+        float strength = norm * uMouseActive * uMouseStrength;
+        float force    = dist < uMouseRadius * 0.32 ? strength : -strength * 0.35;
         modelPosition.xy += normalize(toParticle) * force * norm;
       }
     }
@@ -691,6 +709,61 @@ const fragmentShader = /* glsl */ `
   }
 `;
 
+// ─── Constellation Line Geometry ──────────────────────────────────────────────
+// Computes line segment pairs from a particle positions array.
+// Samples every Nth particle to avoid O(N²) explosion — produces ~80 sampled nodes.
+// Returns a Float32Array of [x0,y0,z0, x1,y1,z1, ...] pairs for LineSegments.
+
+function computeLinePairs(positions, threshold) {
+  const N = positions.length / 3;
+  if (N === 0) return new Float32Array(0);
+  const step = Math.max(1, Math.floor(N / 80));
+  const pairs = [];
+  for (let i = 0; i < N; i += step) {
+    for (let j = i + step; j < N; j += step) {
+      const dx = positions[i * 3] - positions[j * 3];
+      const dy = positions[i * 3 + 1] - positions[j * 3 + 1];
+      const dz = positions[i * 3 + 2] - positions[j * 3 + 2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < threshold && dist > 0.01) {
+        pairs.push(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+        pairs.push(positions[j * 3], positions[j * 3 + 1], positions[j * 3 + 2]);
+      }
+    }
+  }
+  return new Float32Array(pairs);
+}
+
+// ─── Constellation Lines ──────────────────────────────────────────────────────
+
+function ConstellationLines({ linePositions, color, isLightTheme = false }) {
+  const colorRef = useRef(new Color(color));
+  const matRef = useRef();
+
+  useEffect(() => {
+    colorRef.current.set(color);
+    if (matRef.current) matRef.current.color.set(color);
+  }, [color]);
+
+  if (!linePositions || linePositions.length === 0) return null;
+
+  return (
+    <lineSegments>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[linePositions, 3]} />
+      </bufferGeometry>
+      <lineBasicMaterial
+        ref={matRef}
+        color={color}
+        transparent
+        opacity={isLightTheme ? 0.35 : 0.22}
+        blending={isLightTheme ? NormalBlending : AdditiveBlending}
+        depthWrite={false}
+      />
+    </lineSegments>
+  );
+}
+
 // ─── Logo Glow ────────────────────────────────────────────────────────────────
 
 function LogoGlow({ secondaryHex }) {
@@ -709,11 +782,11 @@ function LogoGlow({ secondaryHex }) {
     grad.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, s, s);
-    return new THREE.CanvasTexture(c);
+    return new CanvasTexture(c);
   }, []);
 
-  const colorRef = useRef(new THREE.Color(secondaryHex));
-  const targetRef = useRef(new THREE.Color(secondaryHex));
+  const colorRef = useRef(new Color(secondaryHex));
+  const targetRef = useRef(new Color(secondaryHex));
 
   useEffect(() => {
     targetRef.current.set(secondaryHex);
@@ -735,7 +808,7 @@ function LogoGlow({ secondaryHex }) {
         color={secondaryHex}
         transparent
         opacity={0.16}
-        blending={THREE.AdditiveBlending}
+        blending={AdditiveBlending}
         depthWrite={false}
       />
     </mesh>
@@ -744,16 +817,67 @@ function LogoGlow({ secondaryHex }) {
 
 // ─── Particles ────────────────────────────────────────────────────────────────
 
-function Particles({ eraConfig, eraId, mousePos, particleSize, particleAlpha }) {
+function Particles({
+  eraConfig,
+  eraId,
+  mousePos,
+  particleSize,
+  particleAlpha,
+  lerpSpeed = 2.2,
+  mouseRadius = 2.5,
+  mouseStrength = 0.45,
+  onTargetReady,
+  isLightTheme = false,
+}) {
   const pointsRef = useRef();
   const materialRef = useRef();
+  // Stable ref for lerp speed — avoids re-registering useFrame on every preset change
+  const lerpSpeedRef = useRef(lerpSpeed);
+  useEffect(() => {
+    lerpSpeedRef.current = lerpSpeed;
+  }, [lerpSpeed]);
 
   const currentPos = useRef(new Float32Array(PARTICLE_COUNT * 3));
   const targetPos = useRef(new Float32Array(PARTICLE_COUNT * 3));
-  const colorA = useRef(new THREE.Color(eraConfig.primaryHex));
-  const colorB = useRef(new THREE.Color(eraConfig.secondaryHex));
-  const targetA = useRef(new THREE.Color(eraConfig.primaryHex));
-  const targetB = useRef(new THREE.Color(eraConfig.secondaryHex));
+  // For light themes: darken the era's actual color to be contrast-safe on cream,
+  // and pair it with a complementary jewel tone for visual richness.
+  // This preserves the era's color identity while ensuring visibility.
+  const JEWEL_ACCENTS = [
+    '#3c1053', // Deep Plum
+    '#1a3350', // Navy
+    '#064e3b', // Emerald
+    '#4a0e2e', // Burgundy
+    '#3d0c3c', // Aubergine
+    '#2b0057', // Indigo
+  ];
+  const darkenForLight = (hex, isSecondary = false) => {
+    if (!isLightTheme) return hex;
+    if (isSecondary) {
+      // Secondary: pick a jewel tone complement based on era hash
+      const hash = (eraId ?? '').split('').reduce((s, c) => s + c.charCodeAt(0), 0);
+      return JEWEL_ACCENTS[hash % JEWEL_ACCENTS.length];
+    }
+    // Primary: darken the era's actual color by pushing it toward black
+    // This preserves the era's hue (blue era stays blue, green stays green)
+    // but ensures contrast against cream
+    try {
+      const c = new Color(hex);
+      const hsl = {};
+      c.getHSL(hsl);
+      // Clamp lightness to max 0.25 (very dark) and boost saturation
+      c.setHSL(hsl.h, Math.min(hsl.s * 1.3, 1.0), Math.min(hsl.l, 0.2));
+      return `#${c.getHexString()}`;
+    } catch {
+      return '#1a3350'; // fallback navy
+    }
+  };
+  const darkA = darkenForLight(eraConfig.primaryHex, false);
+  const darkB = darkenForLight(eraConfig.secondaryHex, true);
+
+  const colorA = useRef(new Color(darkA));
+  const colorB = useRef(new Color(darkB));
+  const targetA = useRef(new Color(darkA));
+  const targetB = useRef(new Color(darkB));
 
   const { aRandom, aPhase, aColorMix } = useMemo(() => {
     const random = new Float32Array(PARTICLE_COUNT);
@@ -772,32 +896,64 @@ function Particles({ eraConfig, eraId, mousePos, particleSize, particleAlpha }) 
   // biome-ignore lint/correctness/useExhaustiveDependencies: init-once by design
   useMemo(() => {
     const init =
-      getCanvasLogoPositions(eraId) ??
+      getCanvasLogoPositions(eraId, eraConfig.company) ??
       (FALLBACK_GENERATORS[eraConfig.pattern] || generateNeural)(PARTICLE_COUNT);
     currentPos.current.set(init);
     targetPos.current.set(init);
   }, []);
 
   // On era change: set canvas target immediately, then try image async
+  // biome-ignore lint/correctness/useExhaustiveDependencies: darkenForLight depends only on isLightTheme (stable)
   useEffect(() => {
     // 1. Canvas fallback — immediate
     const canvasPos =
-      getCanvasLogoPositions(eraId) ??
+      getCanvasLogoPositions(eraId, eraConfig.company) ??
       (FALLBACK_GENERATORS[eraConfig.pattern] || generateNeural)(PARTICLE_COUNT);
     targetPos.current.set(canvasPos);
-    targetA.current.set(eraConfig.primaryHex);
-    targetB.current.set(eraConfig.secondaryHex);
+    targetA.current.set(darkenForLight(eraConfig.primaryHex, false));
+    targetB.current.set(darkenForLight(eraConfig.secondaryHex, true));
+    // Notify constellation lines (or any parent) that target positions are ready
+    onTargetReady?.(targetPos.current);
 
-    // 2. Actual image — async upgrade (if logoUrl provided)
-    const { logoUrl, logoDarkBg = false } = eraConfig;
-    if (!logoUrl) return;
-
+    // 2. Try loading a real logo image
+    // Priority: shared SVG > user logo > local /logos/ SVG > canvas fallback
+    const { logoDarkBg = false } = eraConfig;
     let cancelled = false;
-    loadLogoFromUrl(logoUrl, logoDarkBg).then((imgPos) => {
-      if (cancelled || !imgPos) return;
-      // Cache under an image-specific key and set as new morph target
-      logoPositionCache.set(`${eraId}_img`, imgPos);
-      targetPos.current.set(imgPos);
+
+    // Derive the shared-logo slug for both Supabase and local fallback
+    const companyLower = (eraConfig.company || '').toLowerCase().trim();
+    const sharedSlug = SHARED_LOGO_MAP[companyLower] || null;
+    const sharedUrl = sharedSlug ? `${SUPABASE_LOGO_BASE}${sharedSlug}.svg` : null;
+    const localLogoUrl = sharedSlug ? `/logos/${sharedSlug}.svg` : null;
+    const userLogoUrl = ensureLogoDevToken(eraConfig.logoUrl);
+
+    // Priority: user-uploaded logo > shared bucket > local SVG fallback
+    // User logos are most reliable (they just passed through publish upload)
+    const urlsToTry = [userLogoUrl, sharedUrl, localLogoUrl].filter(Boolean);
+    if (!urlsToTry.length) return;
+
+    /** Apply loaded positions and cache them */
+    const applyPositions = (pos) => {
+      logoPositionCache.set(`${eraId}_img`, pos);
+      targetPos.current.set(pos);
+    };
+
+    /** Try a URL, resolve to positions or null */
+    const tryLoad = (url) =>
+      url
+        ? loadLogoFromUrl(url, logoDarkBg).then((p) => (cancelled ? null : p))
+        : Promise.resolve(null);
+
+    // Try each URL in sequence until one succeeds
+    let chain = Promise.resolve(null);
+    for (const url of urlsToTry) {
+      chain = chain.then((pos) => {
+        if (pos) return pos; // already found a working logo
+        return tryLoad(url);
+      });
+    }
+    chain.then((pos) => {
+      if (pos) applyPositions(pos);
     });
     return () => {
       cancelled = true;
@@ -810,17 +966,18 @@ function Particles({ eraConfig, eraId, mousePos, particleSize, particleAlpha }) 
     eraConfig.logoUrl,
     eraConfig.logoDarkBg,
     eraConfig,
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
+    onTargetReady,
+  ]);
 
   useFrame((state, delta) => {
     if (!pointsRef.current || !materialRef.current) return;
 
     const dt = Math.min(delta, 0.05);
-    const lf = 1 - Math.exp(-LERP_SPEED * dt);
+    const lf = 1 - Math.exp(-lerpSpeedRef.current * dt);
 
     if (mousePos?.current) {
       materialRef.current.uniforms.uMouse.value.set(mousePos.current.x, mousePos.current.y);
-      materialRef.current.uniforms.uMouseActive.value = THREE.MathUtils.lerp(
+      materialRef.current.uniforms.uMouseActive.value = MathUtils.lerp(
         materialRef.current.uniforms.uMouseActive.value,
         mousePos.current.active ? 1.0 : 0.0,
         lf * 3,
@@ -840,18 +997,28 @@ function Particles({ eraConfig, eraId, mousePos, particleSize, particleAlpha }) 
     materialRef.current.uniforms.uTime.value = state.clock.elapsedTime;
   });
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mouseRadius/mouseStrength intentionally omitted — they are written to the live uniform in the useEffect below to avoid recreating the full uniform object on preset changes
   const uniforms = useMemo(
     () => ({
       uSize: { value: particleSize ?? 7.0 },
       uTime: { value: 0 },
-      uColorA: { value: new THREE.Color(eraConfig.primaryHex) },
-      uColorB: { value: new THREE.Color(eraConfig.secondaryHex) },
-      uMouse: { value: new THREE.Vector2(0, 0) },
+      uColorA: { value: new Color(eraConfig.primaryHex) },
+      uColorB: { value: new Color(eraConfig.secondaryHex) },
+      uMouse: { value: new Vector2(0, 0) },
       uMouseActive: { value: 0.0 },
+      uMouseRadius: { value: mouseRadius },
+      uMouseStrength: { value: mouseStrength },
       uAlpha: { value: particleAlpha ?? 0.95 },
     }),
     [eraConfig.primaryHex, eraConfig.secondaryHex, particleAlpha, particleSize],
   );
+
+  // Sync mouse force uniforms when preset changes — avoids recreating all uniforms
+  useEffect(() => {
+    if (!materialRef.current) return;
+    materialRef.current.uniforms.uMouseRadius.value = mouseRadius;
+    materialRef.current.uniforms.uMouseStrength.value = mouseStrength;
+  }, [mouseRadius, mouseStrength]);
 
   return (
     <points ref={pointsRef}>
@@ -888,7 +1055,7 @@ function Particles({ eraConfig, eraId, mousePos, particleSize, particleAlpha }) 
         uniforms={uniforms}
         transparent
         depthWrite={false}
-        blending={THREE.AdditiveBlending}
+        blending={isLightTheme ? NormalBlending : AdditiveBlending}
       />
     </points>
   );
@@ -910,6 +1077,10 @@ function CameraDrift() {
 // Drop actual logo PNGs into /public/logos/{era-id}.png and they'll be used
 // automatically. Supported IDs: gp, rigetti, glassdoor, ubisoft, cengage.
 // Set logoDarkBg: true for logos on dark backgrounds (e.g. Ubisoft white-on-black).
+//
+// presetId — key into SCENE_PRESETS (default: 'particles').
+//   Controls bloom intensity, lerpSpeed, and mouse force field.
+//   The 'constellation' preset also renders connecting line segments between nearby particles.
 
 const ResumeSceneCanvas = ({
   eraConfig,
@@ -918,8 +1089,30 @@ const ResumeSceneCanvas = ({
   particleSize = 7.0,
   particleAlpha = 0.95,
   particleOffset = [0, 0],
+  presetId = DEFAULT_PRESET_ID,
+  isLightTheme = false,
+  lightBgHex = '#f0f0f0',
 }) => {
-  const bg = eraConfig?.bgHex || '#020808';
+  // Light themes keep their own background — era bgHex values are dark by design
+  const bg = isLightTheme ? lightBgHex : eraConfig?.bgHex || '#0f172a';
+  const preset = SCENE_PRESETS[presetId] ?? SCENE_PRESETS[DEFAULT_PRESET_ID];
+
+  // Constellation lines: track target positions from Particles when preset requires it.
+  // linePositions is null until Particles notifies us via onTargetReady.
+  const [linePositions, setLinePositions] = useState(null);
+
+  // Recompute constellation lines when era or preset changes
+  const handleTargetReady = useMemo(() => {
+    if (!preset.showConnections) return undefined;
+    return (positions) => {
+      setLinePositions(computeLinePairs(positions, preset.connectionThreshold));
+    };
+  }, [preset.showConnections, preset.connectionThreshold]);
+
+  // Clear line state when switching away from constellation preset
+  useEffect(() => {
+    if (!preset.showConnections) setLinePositions(null);
+  }, [preset.showConnections]);
 
   return (
     <Canvas
@@ -930,18 +1123,36 @@ const ResumeSceneCanvas = ({
     >
       <color attach="background" args={[bg]} />
       <group position={[particleOffset[0], particleOffset[1], 0]}>
-        <LogoGlow secondaryHex={eraConfig?.secondaryHex || '#ffd700'} />
+        {/* LogoGlow uses AdditiveBlending — invisible/counterproductive on light backgrounds */}
+        {!isLightTheme && <LogoGlow secondaryHex={eraConfig?.secondaryHex || '#ffd700'} />}
         <Particles
           eraConfig={eraConfig}
           eraId={eraId}
           mousePos={mousePos}
           particleSize={particleSize}
           particleAlpha={particleAlpha}
+          lerpSpeed={preset.lerpSpeed}
+          mouseRadius={0}
+          mouseStrength={0}
+          onTargetReady={handleTargetReady}
+          isLightTheme={isLightTheme}
         />
+        {preset.showConnections && linePositions && (
+          <ConstellationLines
+            linePositions={linePositions}
+            color={eraConfig?.primaryHex ?? '#3b82f6'}
+            isLightTheme={isLightTheme}
+          />
+        )}
       </group>
       <CameraDrift />
       <EffectComposer>
-        <Bloom luminanceThreshold={0.45} intensity={0.5} mipmapBlur />
+        {/* Light themes: bloom is near-invisible with NormalBlending; use minimal settings */}
+        <Bloom
+          luminanceThreshold={isLightTheme ? 0.95 : preset.bloom.threshold}
+          intensity={isLightTheme ? 0.15 : preset.bloom.intensity}
+          mipmapBlur
+        />
       </EffectComposer>
     </Canvas>
   );

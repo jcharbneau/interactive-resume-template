@@ -102,12 +102,6 @@ ${ogImage}
 // ─── profile.json plugin ───────────────────────────────────────────────────────
 // Generates /profile.json in the build output — machine-readable identity endpoint
 // for agents, crawlers, and recruiting tools.
-//
-// Shape: { type, version, name, title, location, email, siteUrl, linkedin, github,
-//          summary, skills[], companies[], timeline[], connections[] }
-//
-// Drop public/profile.json into your fork if you want to override with custom data.
-// The build plugin will NOT overwrite a file already present in public/.
 function profileJsonPlugin() {
   return {
     name: 'profile-json',
@@ -168,12 +162,16 @@ function buildProfile({ meta = {}, eras = [] }) {
 
 export default defineConfig({
   plugins: [react(), resumeSeoPlugin(), profileJsonPlugin()],
+  esbuild: {
+    // Strip console.log/debug in production — keep warn/error for client-side tracking
+    pure: ['console.log', 'console.debug'],
+  },
   build: {
     rollupOptions: {
       output: {
         manualChunks: {
           three: ['three'],
-          r3f: ['@react-three/fiber', '@react-three/drei', '@react-three/postprocessing'],
+          r3f: ['@react-three/fiber', '@react-three/postprocessing'],
         },
       },
     },
